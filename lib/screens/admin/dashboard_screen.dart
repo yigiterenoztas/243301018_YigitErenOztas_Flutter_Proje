@@ -5,6 +5,9 @@ class DashboardScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold();
+    return Scaffold(
+      appBar: AppBar(title: const Text('Admin Panel')),
+      body: const Center(child: Text('Admin Dashboard')),
+    );
   }
 }
