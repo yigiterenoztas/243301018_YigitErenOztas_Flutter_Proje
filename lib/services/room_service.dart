@@ -1,0 +1,3 @@
+class RoomService {
+  RoomService();
+}
