@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "609878151648",
+    "project_id": "konaklama-rezervasyon-sistemi",
+    "storage_bucket": "konaklama-rezervasyon-sistemi.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:609878151648:android:71754028cf853ce8b45b85",
+        "android_client_info": {
+          "package_name": "com.example.konaklama_rezervasyon_sistemi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCEvBXi5zeLNOKygR9xBONPN6Uu6hJ9mWk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
