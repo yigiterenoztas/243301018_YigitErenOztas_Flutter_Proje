@@ -1,4 +1,4 @@
-class ReservationModel {
+﻿class ReservationModel {
   final String id;
   final String userId;
   final String roomId;

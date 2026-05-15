@@ -1,4 +1,4 @@
-class RoomModel {
+﻿class RoomModel {
   final String id;
   final String name;
   final double pricePerNight;

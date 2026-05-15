@@ -1,4 +1,4 @@
-class ExpenseModel {
+﻿class ExpenseModel {
   final String id;
   final String userId;
   final String reservationId;
