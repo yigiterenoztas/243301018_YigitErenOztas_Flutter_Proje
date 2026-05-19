@@ -2,8 +2,9 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
+import 'constants.dart';
 import 'screens/auth/login_screen.dart';
-import 'screens/guest/home_screen.dart';
+import 'screens/guest/guest_main_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
 import 'screens/admin/super_admin_screen.dart';
 import 'services/auth_service.dart';
@@ -23,8 +24,22 @@ class MyApp extends StatelessWidget {
       title: 'Konaklama Rezervasyon Sistemi',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: AppColors.teal,
+          brightness: Brightness.dark,
+        ),
         useMaterial3: true,
+        // Tüm ekranların varsayılan arka planı — beyaz flash'ı önler
+        scaffoldBackgroundColor: AppColors.bgTop,
+        // Sayfa geçiş animasyonunda arka plan rengi
+        canvasColor: AppColors.bgTop,
+        // Geçiş animasyonlarını hızlandır ve siyah/beyaz flash'ı önle
+        pageTransitionsTheme: const PageTransitionsTheme(
+          builders: {
+            TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
+            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          },
+        ),
       ),
       // Uygulama açıldığında oturum durumunu kontrol et
       home: StreamBuilder<User?>(
@@ -64,7 +79,7 @@ class MyApp extends StatelessWidget {
                 } else if (role == 'yonetici') {
                   return const DashboardScreen();
                 } else if (role == 'guest') {
-                  return const HomeScreen();
+                  return const GuestMainScreen();
                 } else {
                   return const LoginScreen();
                 }

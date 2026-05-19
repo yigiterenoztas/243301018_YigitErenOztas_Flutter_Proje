@@ -2,7 +2,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 // AuthService: Tüm kimlik doğrulama işlemlerini yöneten servis sınıfı
-// Firebase Authentication ve Firestore ile iletişimi bu sınıf kurar
+// Firebase Authentication ve Firestore ile iletişim buradan
 class AuthService {
   // Firebase Authentication örneği - giriş/çıkış/kayıt işlemleri için
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -37,8 +37,9 @@ class AuthService {
         'email': email,
         'ad': ad,
         'soyad': soyad,
-        'role': 'guest',                           // Varsayılan rol: misafir
-        'createdAt': FieldValue.serverTimestamp(), // Kayıt tarihi (sunucu saati)
+        'role': 'guest', // Varsayılan rol: misafir
+        'createdAt':
+            FieldValue.serverTimestamp(), // Kayıt tarihi (sunucu saati)
       });
 
       // Kayıt işlemini log koleksiyonuna yaz (takip amaçlı)
@@ -188,14 +189,15 @@ class AuthService {
     User? user = _auth.currentUser;
     if (user == null) return null;
 
-    DocumentSnapshot doc =
-        await _firestore.collection('users').doc(user.uid).get();
+    DocumentSnapshot doc = await _firestore
+        .collection('users')
+        .doc(user.uid)
+        .get();
     if (doc.exists) {
       return doc['role'] as String?;
     }
     return null;
   }
-
 
   // ── MEVCUT ÇALIŞAN ────────────────────────────────────────────
   // Admin paneli için çalışan bilgisini ayrı koleksiyondan çeker
@@ -203,8 +205,10 @@ class AuthService {
     User? user = _auth.currentUser;
     if (user == null) return null;
 
-    DocumentSnapshot doc =
-        await _firestore.collection('calisanlar').doc(user.uid).get();
+    DocumentSnapshot doc = await _firestore
+        .collection('calisanlar')
+        .doc(user.uid)
+        .get();
     if (doc.exists) {
       return doc.data() as Map<String, dynamic>;
     }

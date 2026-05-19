@@ -3,6 +3,7 @@ import '../../constants.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../services/auth_service.dart';
+import '../../data/turkey_locations.dart';
 import '../auth/login_screen.dart';
 import 'reservation_approval_screen.dart';
 
@@ -19,11 +20,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final _firestore = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
 
-  // Aktif sekme indeksi (0: Anasayfa, 1: Düzenle, 2: Rezervasyonlar)
+  // Aktif sekme indeksi (0: Anasayfa, 1: Odalar, 2: Tesis, 3: Rezervasyonlar)
   int _secilenSekme = 0;
 
   // Giriş yapan yöneticinin Firestore'dan çekilen bilgileri
   Map<String, dynamic>? _kullaniciBilgi;
+
+  // ── Tesis düzenle state ───────────────────────────────────────
+  final _tesisAdiCtrl = TextEditingController();
+  String? _secilenIl;
+  String? _secilenIlce;
+  int _yildiz = 0;
+  bool _bilgiKaydediliyor = false;
 
   @override
   void initState() {
@@ -37,8 +45,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (uid == null) return;
     final doc = await _firestore.collection('users').doc(uid).get();
     if (doc.exists && mounted) {
-      setState(() => _kullaniciBilgi = doc.data());
+      final data = doc.data()!;
+      setState(() {
+        _kullaniciBilgi = data;
+        _tesisAdiCtrl.text = data['tesisAdi'] ?? '';
+        _secilenIl = data['il'];
+        _secilenIlce = data['ilce'];
+        _yildiz = (data['yildiz'] ?? 0) as int;
+      });
     }
+  }
+
+  @override
+  void dispose() {
+    _tesisAdiCtrl.dispose();
+    super.dispose();
   }
 
   // Yönetici adı ve soyadını birleştirerek döndürür
@@ -80,9 +101,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: IndexedStack(
                   index: _secilenSekme,
                   children: [
-                    _buildAnasayfa(),        // Sekme 0
-                    _buildDuzenle(),         // Sekme 1
-                    ReservationApprovalScreen( // Sekme 2
+                    _buildAnasayfa(),          // Sekme 0
+                    _buildDuzenle(),           // Sekme 1
+                    _buildTesisDuzenle(),      // Sekme 2
+                    ReservationApprovalScreen( // Sekme 3
                       yoneticiUid: _uid,
                       tesisAdi: _tesisAdi,
                     ),
@@ -150,10 +172,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   // ── ALT NAVİGASYON ÇUBUĞU ─────────────────────────────────────
   Widget _buildBottomNav() {
-    // 3 sekme tanımı
+    // 4 sekme tanımı
     const items = [
       (icon: Icons.home_outlined,           activeIcon: Icons.home,           label: 'Ana Sayfa'),
-      (icon: Icons.edit_outlined,           activeIcon: Icons.edit,           label: 'Düzenle'),
+      (icon: Icons.bed_outlined,            activeIcon: Icons.bed,            label: 'Odalar'),
+      (icon: Icons.hotel_outlined,          activeIcon: Icons.hotel,          label: 'Tesis'),
       (icon: Icons.event_note_outlined,     activeIcon: Icons.event_note,     label: 'Rezervasyonlar'),
     ];
 
@@ -1017,10 +1040,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ),
                               const SizedBox(width: 8),
                             ],
-                            // Müsaitlik durumu - tıklanınca değişir
+                            // Müsaitlik durumu
+                            // Müsait → tıklanınca dolu yap
+                            // Dolu → tıklanınca rezervasyon detayını göster
                             GestureDetector(
-                              onTap: () => _odaMusaitlikDegistir(
-                                docId, odaNo, !musait, durumlari),
+                              onTap: () {
+                                if (musait) {
+                                  _odaMusaitlikDegistir(
+                                      docId, odaNo, false, durumlari);
+                                } else {
+                                  _doluOdaBilgisiGoster(ctx, docId, odaNo);
+                                }
+                              },
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 12, vertical: 6),
@@ -1035,15 +1066,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         : Colors.redAccent.withValues(alpha: 0.4),
                                   ),
                                 ),
-                                child: Text(
-                                  musait ? 'Müsait' : 'Dolu',
-                                  style: TextStyle(
-                                    color: musait
-                                        ? Colors.green
-                                        : Colors.redAccent,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      musait ? 'Müsait' : 'Dolu',
+                                      style: TextStyle(
+                                        color: musait
+                                            ? Colors.green
+                                            : Colors.redAccent,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    if (!musait) ...[
+                                      const SizedBox(width: 4),
+                                      Icon(Icons.info_outline,
+                                          color: Colors.redAccent
+                                              .withValues(alpha: 0.8),
+                                          size: 13),
+                                    ],
+                                  ],
                                 ),
                               ),
                             ),
@@ -1061,8 +1104,309 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // Tarih seçim bottom sheet'i — giriş & çıkış tarihlerini seçtirir
+  // Onaylanınca Map<String,DateTime> döner, iptal edilince null döner
+  Widget _rezerveTarihSheet(
+      BuildContext sheetCtx, String odaNo, String tipAdi) {
+    DateTime? giris;
+    DateTime? cikis;
+
+    String fmt(DateTime? t) {
+      if (t == null) return 'Seçilmedi';
+      return '${t.day.toString().padLeft(2, '0')}.'
+          '${t.month.toString().padLeft(2, '0')}.'
+          '${t.year}';
+    }
+
+    Future<void> tarihSec(bool isGiris, StateSetter setS) async {
+      final simdi = DateTime.now();
+      final secilen = await showDatePicker(
+        context: sheetCtx,
+        initialDate: isGiris
+            ? (giris ?? simdi)
+            : (cikis ?? (giris ?? simdi).add(const Duration(days: 1))),
+        firstDate: simdi,
+        lastDate: simdi.add(const Duration(days: 730)),
+        builder: (ctx, child) => Theme(
+          data: Theme.of(ctx).copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: AppColors.teal,
+              onPrimary: Colors.white,
+              surface: AppColors.card,
+              onSurface: Colors.white,
+            ),
+          ),
+          child: child!,
+        ),
+      );
+      if (secilen == null) return;
+      setS(() {
+        if (isGiris) {
+          giris = secilen;
+          if (cikis != null && !cikis!.isAfter(secilen)) cikis = null;
+        } else {
+          cikis = secilen;
+        }
+      });
+    }
+
+    return StatefulBuilder(
+      builder: (ctx, setS) {
+        final geceSayisi =
+            (giris != null && cikis != null)
+                ? cikis!.difference(giris!).inDays
+                : 0;
+        final hazir = giris != null && cikis != null && geceSayisi > 0;
+
+        return Container(
+          decoration: const BoxDecoration(
+            color: AppColors.card,
+            borderRadius:
+                BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: EdgeInsets.only(
+            left: 24,
+            right: 24,
+            top: 20,
+            bottom:
+                MediaQuery.of(ctx).viewInsets.bottom + 28,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── Başlık ──
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.teal.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.event_available,
+                        color: AppColors.teal, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$odaNo Nolu Oda — Rezervasyon',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15),
+                        ),
+                        Text(
+                          tipAdi,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(sheetCtx),
+                    icon: const Icon(Icons.close,
+                        color: Colors.white38, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              // ── Tarih seçiciler ──
+              Row(
+                children: [
+                  Expanded(
+                    child: _tarihButonAdmin(
+                      label: 'Giriş Tarihi',
+                      tarih: giris,
+                      onTap: () => tarihSec(true, setS),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _tarihButonAdmin(
+                      label: 'Çıkış Tarihi',
+                      tarih: cikis,
+                      onTap: giris != null
+                          ? () => tarihSec(false, setS)
+                          : null,
+                    ),
+                  ),
+                ],
+              ),
+
+              // ── Gece sayısı özeti ──
+              if (geceSayisi > 0) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.teal.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: AppColors.teal.withValues(alpha: 0.2)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.nights_stay_outlined,
+                          color: AppColors.teal, size: 15),
+                      const SizedBox(width: 7),
+                      Text(
+                        '$geceSayisi gece  •  ${fmt(giris)} → ${fmt(cikis)}',
+                        style: const TextStyle(
+                            color: AppColors.teal,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              // ── Giriş tarihi seçilmeden çıkış seçilemez uyarısı ──
+              if (giris == null) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Icon(Icons.info_outline,
+                        color: Colors.white38, size: 14),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'Önce giriş tarihini seçin.',
+                      style:
+                          TextStyle(color: Colors.white38, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ],
+
+              const SizedBox(height: 22),
+
+              // ── Rezerve Et butonu ──
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton.icon(
+                  onPressed: hazir
+                      ? () => Navigator.pop(
+                          sheetCtx, {'giris': giris!, 'cikis': cikis!})
+                      : null,
+                  icon: const Icon(Icons.bookmark_add_outlined,
+                      size: 18),
+                  label: const Text(
+                    'Rezervasyonu Onayla',
+                    style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w700),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.teal,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor:
+                        AppColors.teal.withValues(alpha: 0.3),
+                    disabledForegroundColor: Colors.white38,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                    elevation: 0,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // Tarih seçim butonunun görsel widget'ı (yönetici paneli)
+  Widget _tarihButonAdmin({
+    required String label,
+    required DateTime? tarih,
+    required VoidCallback? onTap,
+  }) {
+    final secildi = tarih != null;
+    final aktif = onTap != null;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        decoration: BoxDecoration(
+          color: secildi
+              ? AppColors.teal.withValues(alpha: 0.1)
+              : aktif
+                  ? Colors.white.withValues(alpha: 0.05)
+                  : Colors.white.withValues(alpha: 0.02),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: secildi
+                ? AppColors.teal.withValues(alpha: 0.4)
+                : aktif
+                    ? Colors.white.withValues(alpha: 0.12)
+                    : Colors.white.withValues(alpha: 0.05),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                  color: aktif ? Colors.white38 : Colors.white24,
+                  fontSize: 11),
+            ),
+            const SizedBox(height: 5),
+            Row(
+              children: [
+                Icon(
+                  Icons.calendar_month,
+                  color: secildi
+                      ? AppColors.teal
+                      : aktif
+                          ? Colors.white38
+                          : Colors.white24,
+                  size: 14,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  tarih == null
+                      ? 'Seçilmedi'
+                      : '${tarih.day.toString().padLeft(2, '0')}.'
+                          '${tarih.month.toString().padLeft(2, '0')}.'
+                          '${tarih.year}',
+                  style: TextStyle(
+                    color: secildi
+                        ? Colors.white
+                        : aktif
+                            ? Colors.white54
+                            : Colors.white24,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // "dd.MM.yyyy" formatında tarih string'i döndürür
+  String _tarihFormat(DateTime t) =>
+      '${t.day.toString().padLeft(2, '0')}.'
+      '${t.month.toString().padLeft(2, '0')}.'
+      '${t.year}';
+
   // Yönetici panelinden manuel rezervasyon yapar
-  // Odayı "dolu" olarak işaretler ve rezervasyonlar koleksiyonuna kayıt ekler
+  // Önce tarih seçim bottom sheet'i açar, ardından Firestore'a kaydeder
   Future<void> _odayiRezerveEt(
     BuildContext ctx,
     String docId,
@@ -1070,43 +1414,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     String tipAdi,
     Map<String, dynamic> mevcutDurumlari,
   ) async {
-    // Onay dialogu - yanlışlıkla tıklamayı önler
-    final onay = await showDialog<bool>(
+    // Tarih seçim bottom sheet'ini göster ve sonucu bekle
+    final tarihler = await showModalBottomSheet<Map<String, DateTime>>(
       context: ctx,
-      builder: (dCtx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          '$odaNo Nolu Odayı Rezerve Et',
-          style: const TextStyle(
-              color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-        ),
-        content: const Text(
-          'Bu oda dolu olarak işaretlenecek ve rezervasyon kaydı oluşturulacak.',
-          style: TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dCtx, false),
-            child: const Text('İptal',
-                style: TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(dCtx, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.teal,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-              elevation: 0,
-            ),
-            child: const Text('Rezerve Et'),
-          ),
-        ],
-      ),
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetCtx) =>
+          _rezerveTarihSheet(sheetCtx, odaNo, tipAdi),
     );
 
-    if (onay != true) return;
+    // Kullanıcı iptal ettiyse çık
+    if (tarihler == null) return;
+
+    final giris = tarihler['giris']!;
+    final cikis = tarihler['cikis']!;
+    final geceSayisi = cikis.difference(giris).inDays;
 
     // Odayı dolu olarak işaretle
     final yeniDurumlari = Map<String, dynamic>.from(mevcutDurumlari);
@@ -1123,10 +1445,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'odaTip': tipAdi,
       'yoneticiUid': _uid,
       'tesisAdi': _tesisAdi,
-      'misafirUid': 'manuel',        // Yönetici tarafından manuel eklendi
+      'misafirUid': 'manuel',
       'misafirEmail': '-',
       'misafirAdi': 'Manuel Rezervasyon',
-      'durum': 'onaylandi',          // Manuel rezervasyon direkt onaylı sayılır
+      'girisTarihi': _tarihFormat(giris),
+      'cikisTarihi': _tarihFormat(cikis),
+      'geceSayisi': geceSayisi,
+      'durum': 'onaylandi', // Manuel rezervasyon direkt onaylı
       'olusturmaTarihi': FieldValue.serverTimestamp(),
     });
 
@@ -1146,6 +1471,289 @@ class _DashboardScreenState extends State<DashboardScreen> {
       backgroundColor: AppColors.teal,
       behavior: SnackBarBehavior.floating,
     ));
+  }
+
+  // Dolu odaya tıklanınca o odaya ait aktif rezervasyonu bulup detayını gösterir
+  Future<void> _doluOdaBilgisiGoster(
+      BuildContext ctx, String odaId, String odaNo) async {
+    // Önce onaylı rezervasyonu ara, yoksa beklemedekini de kontrol et
+    QuerySnapshot snap = await _firestore
+        .collection('rezervasyonlar')
+        .where('odaId', isEqualTo: odaId)
+        .where('odaNo', isEqualTo: odaNo)
+        .where('durum', isEqualTo: 'onaylandi')
+        .get();
+
+    if (snap.docs.isEmpty) {
+      snap = await _firestore
+          .collection('rezervasyonlar')
+          .where('odaId', isEqualTo: odaId)
+          .where('odaNo', isEqualTo: odaNo)
+          .where('durum', isEqualTo: 'beklemede')
+          .get();
+    }
+
+    if (!ctx.mounted) return;
+
+    if (snap.docs.isEmpty) {
+      // Rezervasyon kaydı bulunamazsa serbest bırakma seçeneği sun
+      showDialog(
+        context: ctx,
+        builder: (dCtx) => AlertDialog(
+          backgroundColor: AppColors.card,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Rezervasyon Bulunamadı',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15)),
+          content: const Text(
+            'Bu odaya ait aktif rezervasyon kaydı yok.\nOdayı müsait olarak işaretlemek ister misiniz?',
+            style: TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dCtx),
+              child: const Text('Hayır',
+                  style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(dCtx);
+                final docSnap = await _firestore
+                    .collection('odalar')
+                    .doc(odaId)
+                    .get();
+                final durumlari = Map<String, dynamic>.from(
+                    (docSnap.data() as Map<String, dynamic>)['odaDurumlari'] ??
+                        {});
+                _odaMusaitlikDegistir(odaId, odaNo, true, durumlari);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.teal,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                elevation: 0,
+              ),
+              child: const Text('Müsait Yap'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final rez = snap.docs.first.data() as Map<String, dynamic>;
+    final misafirAdi = rez['misafirAdi'] ?? '-';
+    final misafirEmail = rez['misafirEmail'] ?? '-';
+    final giris = rez['girisTarihi'] ?? '-';
+    final cikis = rez['cikisTarihi'] ?? '-';
+    final gece = rez['geceSayisi'];
+    final tutar = rez['toplamTutar'];
+    final erkek = rez['erkekSayisi'] ?? 0;
+    final kadin = rez['kadinSayisi'] ?? 0;
+    final cocuk = rez['cocukSayisi'] ?? 0;
+    final durum = rez['durum'] ?? '-';
+    final rezId = snap.docs.first.id;
+
+    showDialog(
+      context: ctx,
+      builder: (dCtx) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+                color: Colors.redAccent.withValues(alpha: 0.25), width: 1.2),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── Başlık ──
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.event_busy,
+                        color: Colors.redAccent, size: 20),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$odaNo Nolu Oda — Dolu',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
+                        ),
+                        Text(
+                          durum == 'onaylandi' ? 'Onaylı Rezervasyon' : 'Bekleyen Talep',
+                          style: TextStyle(
+                            color: durum == 'onaylandi'
+                                ? Colors.greenAccent
+                                : Colors.orange,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(dCtx),
+                    icon: const Icon(Icons.close,
+                        color: Colors.white38, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+              const SizedBox(height: 14),
+
+              // ── Misafir bilgileri ──
+              _rezDetaySatir(Icons.person_outline, 'Misafir', misafirAdi,
+                  Colors.blue),
+              if (misafirEmail != '-')
+                _rezDetaySatir(
+                    Icons.email_outlined, 'E-posta', misafirEmail, Colors.blue),
+
+              const SizedBox(height: 6),
+              Divider(color: Colors.white.withValues(alpha: 0.06), height: 1),
+              const SizedBox(height: 6),
+
+              // ── Tarih bilgileri ──
+              _rezDetaySatir(Icons.login_outlined, 'Giriş Tarihi', giris,
+                  Colors.teal),
+              _rezDetaySatir(Icons.logout_outlined, 'Çıkış Tarihi', cikis,
+                  Colors.teal),
+              if (gece != null)
+                _rezDetaySatir(Icons.nights_stay_outlined,
+                    'Konaklama', '$gece gece', Colors.teal),
+
+              const SizedBox(height: 6),
+              Divider(color: Colors.white.withValues(alpha: 0.06), height: 1),
+              const SizedBox(height: 6),
+
+              // ── Kişi sayısı ──
+              _rezDetaySatir(
+                Icons.people_outline,
+                'Kişi Sayısı',
+                [
+                  if (erkek > 0) '$erkek erkek',
+                  if (kadin > 0) '$kadin kadın',
+                  if (cocuk > 0) '$cocuk çocuk',
+                ].join(', ').isNotEmpty
+                    ? [
+                        if (erkek > 0) '$erkek erkek',
+                        if (kadin > 0) '$kadin kadın',
+                        if (cocuk > 0) '$cocuk çocuk',
+                      ].join(', ')
+                    : '${erkek + kadin + cocuk} kişi',
+                Colors.purple,
+              ),
+              if (tutar != null)
+                _rezDetaySatir(
+                    Icons.payments_outlined,
+                    'Toplam Tutar',
+                    '₺${(tutar as num).toStringAsFixed(0)}',
+                    Colors.green),
+
+              const SizedBox(height: 18),
+
+              // ── Müsait yap butonu ──
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(dCtx);
+                    // Rezervasyonu iptal edildi olarak işaretle
+                    await _firestore
+                        .collection('rezervasyonlar')
+                        .doc(rezId)
+                        .update({'durum': 'iptal edildi'});
+                    // Odayı müsait yap
+                    final docSnap = await _firestore
+                        .collection('odalar')
+                        .doc(odaId)
+                        .get();
+                    final d = Map<String, dynamic>.from(
+                        (docSnap.data() as Map<String, dynamic>)['odaDurumlari'] ??
+                            {});
+                    _odaMusaitlikDegistir(odaId, odaNo, true, d);
+                  },
+                  icon: const Icon(Icons.lock_open_outlined,
+                      size: 17, color: Colors.redAccent),
+                  label: const Text('Odayı Müsait Yap',
+                      style: TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600)),
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(
+                        color: Colors.redAccent.withValues(alpha: 0.4)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Rezervasyon detay dialogundaki satır yardımcı widget'ı
+  Widget _rezDetaySatir(
+      IconData ikon, String etiket, String deger, Color renk) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: renk.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(7),
+            ),
+            child: Icon(ikon, color: renk, size: 14),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(etiket,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11)),
+                const SizedBox(height: 1),
+                Text(deger,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 13,
+                        fontWeight: FontWeight.w500)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // Tek bir odanın müsaitlik durumunu Firestore'da günceller
@@ -1255,6 +1863,320 @@ class _DashboardScreenState extends State<DashboardScreen> {
           borderSide: const BorderSide(color: AppColors.teal, width: 1.5),
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+      ),
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SEKME 2 – TESİS DÜZENLE
+  // Tesis adı, adres, yıldız ve fotoğraf yönetimi
+  // ══════════════════════════════════════════════════════════════
+  Widget _buildTesisDuzenle() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Tesis Adı + Adres kartı
+          _tesisBilgiKarti(),
+          const SizedBox(height: 14),
+          // Yıldız kartı
+          _yildizKarti(),
+          const SizedBox(height: 14),
+          const SizedBox(height: 10),
+          // Kaydet butonu
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: ElevatedButton.icon(
+              onPressed: _bilgiKaydediliyor ? null : _tesisBilgisiKaydet,
+              icon: _bilgiKaydediliyor
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2),
+                    )
+                  : const Icon(Icons.save_outlined, color: Colors.white),
+              label: Text(
+                _bilgiKaydediliyor ? 'Kaydediliyor...' : 'Değişiklikleri Kaydet',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w700),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.teal,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor:
+                    AppColors.teal.withValues(alpha: 0.5),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+                elevation: 0,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tesisBilgiKarti() {
+    final iller = turkiyeIlIlce.keys.toList()..sort();
+    final ilceler = _secilenIl != null
+        ? (turkiyeIlIlce[_secilenIl] ?? [])
+        : <String>[];
+
+    return _tCard(
+      baslik: 'Tesis Bilgileri',
+      ikon: Icons.business_outlined,
+      icerik: Column(
+        children: [
+          // Tesis adı
+          _tField(
+            ctrl: _tesisAdiCtrl,
+            label: 'Tesis Adı',
+            ikon: Icons.hotel_outlined,
+          ),
+          const SizedBox(height: 12),
+          // İl seçimi
+          _ilIlceDropdown(
+            deger: _secilenIl,
+            hint: 'İl seçiniz...',
+            ikon: Icons.location_city_outlined,
+            items: iller,
+            onChanged: (v) => setState(() {
+              _secilenIl = v;
+              _secilenIlce = null; // il değişince ilçeyi sıfırla
+            }),
+          ),
+          const SizedBox(height: 12),
+          // İlçe seçimi
+          _ilIlceDropdown(
+            deger: _secilenIlce,
+            hint: _secilenIl == null
+                ? 'Önce il seçiniz...'
+                : 'İlçe seçiniz...',
+            ikon: Icons.location_on_outlined,
+            items: ilceler,
+            onChanged: _secilenIl == null
+                ? null
+                : (v) => setState(() => _secilenIlce = v),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _yildizKarti() {
+    return _tCard(
+      baslik: 'Yıldız Sayısı',
+      ikon: Icons.star_outline,
+      icerik: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _yildiz == 0 ? 'Seçilmedi' : '$_yildiz Yıldız',
+            style: TextStyle(
+              color: _yildiz == 0 ? Colors.white38 : AppColors.teal,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: List.generate(5, (i) {
+              final dolu = i < _yildiz;
+              return GestureDetector(
+                onTap: () => setState(() => _yildiz = i + 1),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Icon(
+                    dolu ? Icons.star_rounded : Icons.star_outline_rounded,
+                    color: dolu ? Colors.amber : Colors.white24,
+                    size: 36,
+                  ),
+                ),
+              );
+            }),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Tesis bilgilerini (il, ilçe, yıldız) Firestore'a kaydeder
+  Future<void> _tesisBilgisiKaydet() async {
+    final ad = _tesisAdiCtrl.text.trim();
+    if (ad.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Tesis adı boş bırakılamaz.'),
+        backgroundColor: Colors.redAccent,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (_secilenIl == null || _secilenIlce == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Lütfen il ve ilçe seçiniz.'),
+        backgroundColor: Colors.redAccent,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    setState(() => _bilgiKaydediliyor = true);
+    await _firestore.collection('users').doc(_uid).update({
+      'tesisAdi': ad,
+      'il': _secilenIl,
+      'ilce': _secilenIlce,
+      'yildiz': _yildiz,
+    });
+    if (mounted) {
+      setState(() {
+        _bilgiKaydediliyor = false;
+        _kullaniciBilgi = {
+          ...?_kullaniciBilgi,
+          'tesisAdi': ad,
+          'il': _secilenIl,
+          'ilce': _secilenIlce,
+          'yildiz': _yildiz,
+        };
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('Tesis bilgileri kaydedildi.'),
+        backgroundColor: AppColors.card,
+        behavior: SnackBarBehavior.floating,
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ));
+    }
+  }
+
+  // ── TESİS DÜZENLE YARDIMCI WİDGET'LAR ───────────────────────
+
+  Widget _tCard({
+    required String baslik,
+    required IconData ikon,
+    required Widget icerik,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: AppColors.teal.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(ikon, color: AppColors.teal, size: 17),
+              ),
+              const SizedBox(width: 10),
+              Text(baslik,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  )),
+            ],
+          ),
+          const SizedBox(height: 14),
+          icerik,
+        ],
+      ),
+    );
+  }
+
+  Widget _ilIlceDropdown({
+    required String? deger,
+    required String hint,
+    required IconData ikon,
+    required List<String> items,
+    required ValueChanged<String?>? onChanged,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: deger != null
+              ? AppColors.teal.withValues(alpha: 0.4)
+              : Colors.white.withValues(alpha: 0.1),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(ikon,
+              color: deger != null ? AppColors.teal : Colors.white38,
+              size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: deger,
+                hint: Text(hint,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 14)),
+                dropdownColor: AppColors.card,
+                isExpanded: true,
+                icon: Icon(
+                  Icons.keyboard_arrow_down,
+                  color: onChanged != null ? AppColors.teal : Colors.white24,
+                ),
+                style:
+                    const TextStyle(color: Colors.white, fontSize: 14),
+                onChanged: onChanged,
+                items: items
+                    .map((e) =>
+                        DropdownMenuItem(value: e, child: Text(e)))
+                    .toList(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tField({
+    required TextEditingController ctrl,
+    required String label,
+    required IconData ikon,
+    int maxLines = 1,
+  }) {
+    return TextField(
+      controller: ctrl,
+      maxLines: maxLines,
+      style: const TextStyle(color: Colors.white, fontSize: 14),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.white38, fontSize: 13),
+        prefixIcon: Icon(ikon, color: Colors.white38, size: 18),
+        filled: true,
+        fillColor: Colors.white.withValues(alpha: 0.05),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide:
+              BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide:
+              const BorderSide(color: AppColors.teal, width: 1.5),
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       ),
     );
   }

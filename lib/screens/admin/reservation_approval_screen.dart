@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import '../../constants.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -20,8 +20,7 @@ class ReservationApprovalScreen extends StatefulWidget {
 class _ReservationApprovalScreenState
     extends State<ReservationApprovalScreen>
     with SingleTickerProviderStateMixin {
-
-  late TabController _tabCtrl;
+  late final TabController _tabCtrl;
   final _firestore = FirebaseFirestore.instance;
 
   @override
@@ -36,23 +35,81 @@ class _ReservationApprovalScreenState
     super.dispose();
   }
 
-  Future<void> _durumGuncelle(
-      String docId, String yeniDurum, String misafirAdi) async {
+  // Onaylama → rezervasyon durumu + oda dolu işareti
+  Future<void> _onayla(String docId, Map<String, dynamic> data) async {
+    final misafirAdi = data['misafirAdi'] ?? 'Misafir';
+    final String odaId = data['odaId'] ?? '';
+    final String odaNo = data['odaNo'] ?? '';
+
+    // 1) Rezervasyon durumunu güncelle
     await _firestore.collection('rezervasyonlar').doc(docId).update({
-      'durum': yeniDurum,
+      'durum': 'onaylandi',
       'guncellemeTarihi': FieldValue.serverTimestamp(),
     });
 
-    if (!mounted) return;
-    final renk = yeniDurum == 'onaylandi' ? AppColors.teal : Colors.redAccent;
-    final mesaj = yeniDurum == 'onaylandi'
-        ? '$misafirAdi rezervasyonu onaylandı.'
-        : '$misafirAdi rezervasyonu reddedildi.';
+    // 2) İlgili odayı "dolu" olarak işaretle (odaDurumlari[odaNo] = false)
+    if (odaId.isNotEmpty && odaNo.isNotEmpty) {
+      final odaDoc =
+          await _firestore.collection('odalar').doc(odaId).get();
+      if (odaDoc.exists) {
+        final durumlari = Map<String, dynamic>.from(
+            odaDoc.data()?['odaDurumlari'] ?? {});
+        durumlari[odaNo] = false; // false = dolu
+        await _firestore
+            .collection('odalar')
+            .doc(odaId)
+            .update({'odaDurumlari': durumlari});
+      }
+    }
 
+    // Log: yönetici rezervasyonu onayladı
+    await _firestore.collection('logs').add({
+      'action': 'rezervasyon_onaylandi',
+      'rezervasyonId': docId,
+      'yoneticiUid': widget.yoneticiUid,
+      'tesisAdi': widget.tesisAdi,
+      'misafirAdi': misafirAdi,
+      'odaId': odaId,
+      'odaNo': odaNo,
+      'girisTarihi': data['girisTarihi'],
+      'cikisTarihi': data['cikisTarihi'],
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(mesaj),
-      backgroundColor: renk,
+      content: Text('$misafirAdi rezervasyonu onaylandı. Oda dolu işaretlendi.'),
+      backgroundColor: AppColors.teal,
       behavior: SnackBarBehavior.floating,
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
+  }
+
+  // Reddetme → sadece rezervasyon durumu
+  Future<void> _reddet(String docId, String misafirAdi) async {
+    await _firestore.collection('rezervasyonlar').doc(docId).update({
+      'durum': 'reddedildi',
+      'guncellemeTarihi': FieldValue.serverTimestamp(),
+    });
+
+    // Log: yönetici rezervasyonu reddetti
+    await _firestore.collection('logs').add({
+      'action': 'rezervasyon_reddedildi',
+      'rezervasyonId': docId,
+      'yoneticiUid': widget.yoneticiUid,
+      'tesisAdi': widget.tesisAdi,
+      'misafirAdi': misafirAdi,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$misafirAdi rezervasyonu reddedildi.'),
+      backgroundColor: Colors.redAccent,
+      behavior: SnackBarBehavior.floating,
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     ));
   }
 
@@ -60,52 +117,88 @@ class _ReservationApprovalScreenState
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Rezervasyonlar',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold)),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.07),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: TabBar(
-                  controller: _tabCtrl,
-                  dividerColor: Colors.transparent,
-                  indicator: BoxDecoration(
-                    color: AppColors.teal,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  labelColor: Colors.white,
-                  unselectedLabelColor: Colors.white38,
-                  labelStyle: const TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w600),
-                  unselectedLabelStyle: const TextStyle(fontSize: 12),
-                  tabs: const [
-                    Tab(text: 'Bekleyen'),
-                    Tab(text: 'Onaylı'),
-                    Tab(text: 'Reddedilen'),
-                  ],
-                ),
-              ),
-            ],
+        // ── BAŞLIK ──────────────────────────────────────────
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 12, 20, 14),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Rezervasyonlar',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold),
+            ),
           ),
         ),
+
+        // ── BAĞIMSIZ SEKME BUTONLARI ─────────────────────────
+        AnimatedBuilder(
+          animation: _tabCtrl,
+          builder: (context, _) {
+            final aktif = _tabCtrl.index;
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  _sekmeButon(
+                    index: 0,
+                    aktif: aktif,
+                    ikon: Icons.hourglass_top_rounded,
+                    label: 'Bekleyenler',
+                    renk: Colors.orange,
+                  ),
+                  const SizedBox(width: 8),
+                  _sekmeButon(
+                    index: 1,
+                    aktif: aktif,
+                    ikon: Icons.check_circle_outline,
+                    label: 'Onaylananlar',
+                    renk: Colors.green,
+                  ),
+                  const SizedBox(width: 8),
+                  _sekmeButon(
+                    index: 2,
+                    aktif: aktif,
+                    ikon: Icons.cancel_outlined,
+                    label: 'Reddedilenler',
+                    renk: Colors.redAccent,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+
+        // ── TAB İÇERİKLERİ ──────────────────────────────────
         Expanded(
           child: TabBarView(
             controller: _tabCtrl,
             children: [
-              _buildRezervasyonListesi('beklemede'),
-              _buildRezervasyonListesi('onaylandi'),
-              _buildRezervasyonListesi('reddedildi'),
+              _RezervasyonListesi(
+                yoneticiUid: widget.yoneticiUid,
+                firestore: _firestore,
+                durumlar: const ['beklemede'],
+                bosIkon: Icons.hourglass_empty,
+                bosMesaj: 'Bekleyen rezervasyon talebi yok.',
+                onOnayla: _onayla,
+                onReddet: _reddet,
+              ),
+              _RezervasyonListesi(
+                yoneticiUid: widget.yoneticiUid,
+                firestore: _firestore,
+                durumlar: const ['onaylandi'],
+                bosIkon: Icons.event_available_outlined,
+                bosMesaj: 'Onaylanmış rezervasyon yok.',
+              ),
+              _RezervasyonListesi(
+                yoneticiUid: widget.yoneticiUid,
+                firestore: _firestore,
+                durumlar: const ['reddedildi'],
+                bosIkon: Icons.event_busy_outlined,
+                bosMesaj: 'Reddedilen rezervasyon yok.',
+              ),
             ],
           ),
         ),
@@ -113,44 +206,127 @@ class _ReservationApprovalScreenState
     );
   }
 
-  Widget _buildRezervasyonListesi(String durum) {
+  Widget _sekmeButon({
+    required int index,
+    required int aktif,
+    required IconData ikon,
+    required String label,
+    required Color renk,
+  }) {
+    final secili = aktif == index;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => _tabCtrl.animateTo(index),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: secili
+                ? renk.withValues(alpha: 0.18)
+                : AppColors.card,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: secili
+                  ? renk.withValues(alpha: 0.5)
+                  : Colors.white.withValues(alpha: 0.07),
+              width: secili ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(ikon,
+                  color: secili ? renk : Colors.white24,
+                  size: 18),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  color: secili ? renk : Colors.white38,
+                  fontSize: 11,
+                  fontWeight: secili
+                      ? FontWeight.w700
+                      : FontWeight.normal,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── REZERVASYON LİSTESİ ────────────────────────────────────────
+class _RezervasyonListesi extends StatelessWidget {
+  final String yoneticiUid;
+  final FirebaseFirestore firestore;
+  final List<String> durumlar;
+  final String bosMesaj;
+  final IconData bosIkon;
+  final Future<void> Function(String, Map<String, dynamic>)? onOnayla;
+  final Future<void> Function(String, String)? onReddet;
+
+  const _RezervasyonListesi({
+    required this.yoneticiUid,
+    required this.firestore,
+    required this.durumlar,
+    required this.bosMesaj,
+    required this.bosIkon,
+    this.onOnayla,
+    this.onReddet,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot>(
-      stream: _firestore
+      stream: firestore
           .collection('rezervasyonlar')
-          .where('yoneticiUid', isEqualTo: widget.yoneticiUid)
-          .where('durum', isEqualTo: durum)
-          .orderBy('olusturmaTarihi', descending: true)
+          .where('yoneticiUid', isEqualTo: yoneticiUid)
           .snapshots(),
       builder: (context, snap) {
         if (!snap.hasData) {
-          return const Center(child: CircularProgressIndicator(color: AppColors.teal));
+          return const Center(
+              child: CircularProgressIndicator(
+                  color: AppColors.teal, strokeWidth: 2));
         }
 
-        final liste = snap.data!.docs;
+        // Client tarafında filtrele + sırala (composite index gerekmez)
+        final docs = snap.data!.docs.where((d) {
+          final durum =
+              (d.data() as Map<String, dynamic>)['durum']
+                  as String? ??
+                  '';
+          return durumlar.contains(durum);
+        }).toList()
+          ..sort((a, b) {
+            final aT = (a.data()
+                as Map<String, dynamic>)['olusturmaTarihi'];
+            final bT = (b.data()
+                as Map<String, dynamic>)['olusturmaTarihi'];
+            if (aT == null || bT == null) return 0;
+            return (bT as dynamic).compareTo(aT as dynamic);
+          });
 
-        if (liste.isEmpty) {
-          IconData ikon;
-          String mesaj;
-          switch (durum) {
-            case 'beklemede':
-              ikon = Icons.pending_outlined;
-              mesaj = 'Bekleyen rezervasyon yok.';
-              break;
-            case 'onaylandi':
-              ikon = Icons.check_circle_outline;
-              mesaj = 'Onaylı rezervasyon yok.';
-              break;
-            default:
-              ikon = Icons.cancel_outlined;
-              mesaj = 'Reddedilen rezervasyon yok.';
-          }
+        if (docs.isEmpty) {
           return Center(
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(ikon, color: Colors.white24, size: 52),
-                const SizedBox(height: 12),
-                Text(mesaj,
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: AppColors.card,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                        color: Colors.white
+                            .withValues(alpha: 0.07)),
+                  ),
+                  child: Icon(bosIkon,
+                      color: Colors.white24, size: 40),
+                ),
+                const SizedBox(height: 16),
+                Text(bosMesaj,
                     style: const TextStyle(
                         color: Colors.white38, fontSize: 14)),
               ],
@@ -159,71 +335,117 @@ class _ReservationApprovalScreenState
         }
 
         return ListView.builder(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-          itemCount: liste.length,
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+          itemCount: docs.length,
           itemBuilder: (ctx, i) {
-            final doc = liste[i];
+            final doc = docs[i];
             final data = doc.data() as Map<String, dynamic>;
-            return _rezervasyonKarti(doc.id, data, durum);
+            return _RezervasyonKarti(
+              docId: doc.id,
+              data: data,
+              onOnayla: onOnayla,
+              onReddet: onReddet,
+            );
           },
         );
       },
     );
   }
+}
 
-  Widget _rezervasyonKarti(
-      String docId, Map<String, dynamic> data, String durum) {
-    final misafirAdi = data['misafirAdi'] ?? 'Bilinmiyor';
-    final misafirEmail = data['misafirEmail'] ?? '';
-    final odaNo = data['odaNo'] ?? '-';
-    final odaTip = data['odaTip'] ?? '';
-    final giris = data['girisTarihi'] ?? '-';
-    final cikis = data['cikisTarihi'] ?? '-';
-    final erkek = data['erkekSayisi'] ?? 0;
-    final kadin = data['kadinSayisi'] ?? 0;
-    final cocuk = data['cocukSayisi'] ?? 0;
-    final toplamTutar = data['toplamTutar'] ?? 0;
-    final geceSayisi = data['geceSayisi'] ?? 0;
+// ── REZERVASYON KARTI ──────────────────────────────────────────
+class _RezervasyonKarti extends StatelessWidget {
+  final String docId;
+  final Map<String, dynamic> data;
+  final Future<void> Function(String, Map<String, dynamic>)? onOnayla;
+  final Future<void> Function(String, String)? onReddet;
 
-    Color durumRenk;
+  const _RezervasyonKarti({
+    required this.docId,
+    required this.data,
+    this.onOnayla,
+    this.onReddet,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final String misafirAdi = data['misafirAdi'] ?? 'Bilinmiyor';
+    final String misafirEmail = data['misafirEmail'] ?? '';
+    final String odaNo = data['odaNo'] ?? '-';
+    final String odaTip = data['odaTip'] ?? '';
+    final String giris = data['girisTarihi'] ?? '-';
+    final String cikis = data['cikisTarihi'] ?? '-';
+    final int erkek = data['erkekSayisi'] ?? 0;
+    final int kadin = data['kadinSayisi'] ?? 0;
+    final int cocuk = data['cocukSayisi'] ?? 0;
+    final double toplam =
+        (data['toplamTutar'] ?? 0).toDouble();
+    final int gece = data['geceSayisi'] ?? 0;
+    final String durum = data['durum'] ?? 'beklemede';
+    final int toplamKisi = erkek + kadin + cocuk;
+
+    final Color durumRenk;
+    final String durumEtiket;
+    final IconData durumIkon;
     switch (durum) {
       case 'onaylandi':
         durumRenk = Colors.green;
+        durumEtiket = 'Onaylandı';
+        durumIkon = Icons.check_circle_outline;
         break;
       case 'reddedildi':
         durumRenk = Colors.redAccent;
+        durumEtiket = 'Reddedildi';
+        durumIkon = Icons.cancel_outlined;
         break;
       default:
         durumRenk = Colors.orange;
+        durumEtiket = 'Beklemede';
+        durumIkon = Icons.hourglass_top_rounded;
     }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
         color: AppColors.card,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: durumRenk.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+            color: durumRenk.withValues(alpha: 0.25),
+            width: 1.2),
       ),
       child: Column(
         children: [
-          // Üst bilgi
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+          // ── ÜST BANT ──────────────────────────────────
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: durumRenk.withValues(alpha: 0.08),
+              borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(15)),
+            ),
             child: Row(
               children: [
+                // Misafir avatarı
                 CircleAvatar(
-                  radius: 20,
-                  backgroundColor: durumRenk.withValues(alpha: 0.15),
+                  radius: 18,
+                  backgroundColor:
+                      durumRenk.withValues(alpha: 0.2),
                   child: Text(
-                    misafirAdi.isNotEmpty ? misafirAdi[0].toUpperCase() : 'M',
+                    misafirAdi.isNotEmpty
+                        ? misafirAdi[0].toUpperCase()
+                        : 'M',
                     style: TextStyle(
-                        color: durumRenk, fontWeight: FontWeight.bold),
+                        color: durumRenk,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
                     children: [
                       Text(misafirAdi,
                           style: const TextStyle(
@@ -232,120 +454,176 @@ class _ReservationApprovalScreenState
                               fontSize: 14)),
                       Text(misafirEmail,
                           style: const TextStyle(
-                              color: Colors.white38, fontSize: 11),
+                              color: Colors.white38,
+                              fontSize: 11),
                           overflow: TextOverflow.ellipsis),
                     ],
                   ),
                 ),
+                // Durum badge
                 Container(
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                      horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
-                    color: durumRenk.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(20),
+                    color:
+                        durumRenk.withValues(alpha: 0.18),
+                    borderRadius:
+                        BorderRadius.circular(20),
+                    border: Border.all(
+                        color: durumRenk
+                            .withValues(alpha: 0.4)),
                   ),
-                  child: Text(
-                    durum == 'beklemede'
-                        ? 'Beklemede'
-                        : durum == 'onaylandi'
-                            ? 'Onaylı'
-                            : 'Reddedildi',
-                    style: TextStyle(
-                        color: durumRenk,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(durumIkon,
+                          color: durumRenk, size: 11),
+                      const SizedBox(width: 4),
+                      Text(durumEtiket,
+                          style: TextStyle(
+                              color: durumRenk,
+                              fontSize: 11,
+                              fontWeight:
+                                  FontWeight.w700)),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
-          // Detay bilgiler
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 12),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              children: [
-                _detayRow(Icons.bed_outlined, 'Oda',
-                    'No: $odaNo${odaTip.isNotEmpty ? '  •  $odaTip' : ''}'),
-                const SizedBox(height: 6),
-                _detayRow(Icons.calendar_today_outlined, 'Tarih',
-                    '$giris → $cikis${geceSayisi > 0 ? '  ($geceSayisi gece)' : ''}'),
-                const SizedBox(height: 6),
-                _detayRow(Icons.people_outline, 'Kişi Sayısı',
-                    '${erkek > 0 ? '$erkek Erkek  ' : ''}${kadin > 0 ? '$kadin Kadın  ' : ''}${cocuk > 0 ? '$cocuk Çocuk' : ''}'),
-                if (toplamTutar > 0) ...[
-                  const SizedBox(height: 6),
-                  _detayRow(Icons.attach_money, 'Toplam Tutar',
-                      '₺${toplamTutar.toStringAsFixed(0)}'),
+
+          // ── DETAY BİLGİLER ────────────────────────────
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Column(
+                children: [
+                  _detayRow(
+                    Icons.bed_outlined,
+                    '$odaTip  •  $odaNo Nolu Oda',
+                  ),
+                  const SizedBox(height: 7),
+                  _detayRow(
+                    Icons.calendar_today_outlined,
+                    '$giris → $cikis'
+                    '${gece > 0 ? '  ($gece gece)' : ''}',
+                  ),
+                  const SizedBox(height: 7),
+                  _detayRow(
+                    Icons.people_outline,
+                    _kisiMetni(
+                        erkek, kadin, cocuk, toplamKisi),
+                  ),
+                  if (toplam > 0) ...[
+                    const SizedBox(height: 7),
+                    _detayRow(
+                      Icons.payments_outlined,
+                      '₺${toplam.toStringAsFixed(0)} toplam',
+                      degerRenk: AppColors.teal,
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
-          // Butonlar (sadece beklemedeyse)
-          if (durum == 'beklemede')
+
+          // ── ONAYLA / REDDET BUTONLARI ─────────────────
+          if (durum == 'beklemede' &&
+              onOnayla != null &&
+              onReddet != null)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+              padding:
+                  const EdgeInsets.fromLTRB(14, 0, 14, 14),
               child: Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton(
+                    child: OutlinedButton.icon(
                       onPressed: () =>
-                          _durumGuncelle(docId, 'reddedildi', misafirAdi),
+                          onReddet!(docId, misafirAdi),
+                      icon: const Icon(
+                          Icons.close_rounded,
+                          size: 16),
+                      label: const Text('Reddet',
+                          style: TextStyle(
+                              fontWeight:
+                                  FontWeight.w600)),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: Colors.redAccent,
-                        side: const BorderSide(color: Colors.redAccent),
+                        side: BorderSide(
+                            color: Colors.redAccent
+                                .withValues(alpha: 0.6)),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
+                            borderRadius:
+                                BorderRadius.circular(10)),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 10),
                       ),
-                      child: const Text('Reddet',
-                          style: TextStyle(fontWeight: FontWeight.w600)),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
-                    child: ElevatedButton(
+                    child: ElevatedButton.icon(
                       onPressed: () =>
-                          _durumGuncelle(docId, 'onaylandi', misafirAdi),
+                          onOnayla!(docId, data),
+                      icon: const Icon(
+                          Icons.check_rounded,
+                          size: 16),
+                      label: const Text('Onayla',
+                          style: TextStyle(
+                              fontWeight:
+                                  FontWeight.w600)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.teal,
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10)),
+                            borderRadius:
+                                BorderRadius.circular(10)),
                         elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 10),
                       ),
-                      child: const Text('Onayla',
-                          style: TextStyle(fontWeight: FontWeight.w600)),
                     ),
                   ),
                 ],
               ),
             )
           else
-            const SizedBox(height: 14),
+            const SizedBox(height: 4),
         ],
       ),
     );
   }
 
-  Widget _detayRow(IconData ikon, String baslik, String deger) {
+  Widget _detayRow(IconData ikon, String deger,
+      {Color? degerRenk}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Icon(ikon, color: Colors.white38, size: 14),
         const SizedBox(width: 8),
-        Text('$baslik: ',
-            style: const TextStyle(color: Colors.white38, fontSize: 11)),
         Expanded(
-          child: Text(deger,
-              style: const TextStyle(color: Colors.white70, fontSize: 11)),
+          child: Text(
+            deger,
+            style: TextStyle(
+                color: degerRenk ?? Colors.white70,
+                fontSize: 12),
+          ),
         ),
       ],
     );
+  }
+
+  String _kisiMetni(
+      int erkek, int kadin, int cocuk, int toplam) {
+    final p = <String>[];
+    if (erkek > 0) p.add('$erkek erkek');
+    if (kadin > 0) p.add('$kadin kadın');
+    if (cocuk > 0) p.add('$cocuk çocuk');
+    return p.isEmpty ? '$toplam kişi' : p.join(', ');
   }
 }
